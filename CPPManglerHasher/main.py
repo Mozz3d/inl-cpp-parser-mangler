@@ -42,6 +42,7 @@ Keys = SimpleNamespace(
     SHORT = 'short',
     INT = 'int',
     LONG = 'long',
+    INT64 = '__int64',
     CLASS = 'class',
     STRUCT = 'struct',
     UNION = 'union',
@@ -49,6 +50,7 @@ Keys = SimpleNamespace(
     PTR = '*',
     REF = '&',
     RVAL_REF = '&&',
+    PTR64 = '__ptr64',
  
     DESTRUCTOR = '~'
 )
@@ -399,7 +401,7 @@ class FundamentalTypeSpecifier(Node):
             (?:{Keys.VOID}|{Keys.BOOL}|{Keys.FLOAT}|{Keys.DOUBLE})
             |
             (?:(?P<signage>{Keys.SIGNED}|{Keys.UNSIGNED})\s+)?
-            (?:{Keys.CHAR}|{Keys.SHORT}|{Keys.INT}|{Keys.LONG})
+            (?:{Keys.CHAR}|{Keys.SHORT}|{Keys.INT}|{Keys.LONG}|{Keys.INT64})
         ''', re.VERBOSE)
 
     @lazyattr
@@ -453,6 +455,14 @@ class FundamentalTypeSpecifier(Node):
     @lazyattr
     def ULONG(cls):
         return cls(f'{Keys.UNSIGNED} {Keys.LONG}')
+    
+    @lazyattr
+    def INT64(cls):
+        return cls(Keys.INT64)
+    
+    @lazyattr
+    def UINT64(cls):
+        return cls(f'{Keys.UNSIGNED} {Keys.INT64}')
     
     def __init__(self, string: str):
         match = self.parse(string)
@@ -568,6 +578,7 @@ class PtrOperator(Node):
             (?P<ptrToMemberOf>{NestedNameSpecifier.genericPattern})?
             (?P<operator>{Keys.RVAL_REF}|{Keys.REF}|{re.escape(Keys.PTR)})\s*
             (?P<cvQualSeq>{CVQualifierSeq.genericPattern})?
+            (?:\s+{Keys.PTR64})? # All pointers are assumed to be 64 bits
         ''', re.VERBOSE)
 
     @lazyattr
@@ -749,10 +760,6 @@ class PtrAbstractDeclarator(Node):
 #        return re.compile(rf'\{Keys.L_SQR_BRACKET}\s*(?P<constLen>\d*)\s*\{Keys.R_SQR_BRACKET}', re.VERBOSE)
 #    
 #    def __init__(self, string: str):
-#        match = self.regex.fullmatch(string)
-#        if not match:
-#            raise SyntaxError(f"Invalid {type(self).__name__} '{string}'")
-#
 #        self.length = match.group('constLen')
 #    
 #    def __str__(self) -> str:
@@ -768,10 +775,6 @@ class PtrAbstractDeclarator(Node):
 #        ''', re.VERBOSE)
 #    
 #    def __init__(self, string: str):
-#        match = self.regex.fullmatch(string)
-#        if not match:
-#            raise SyntaxError(f"Invalid {type(self).__name__} '{string}'")
-#
 #        self.type_spec = TypeSpecifier(match.group('name'))
 #        self.operator = SubscriptOperator(match.group('operator'))
 #    
@@ -802,7 +805,7 @@ class FunctionClass(Node):
             (?:
                 (?P<access>{AccessSpecifier.genericPattern})\s*
                 (?:\{Keys.ACCESS_SCOPE}\s*)?
-                (?P<resolution>{ResolutionSpecifier.genericPattern})?
+                (?P<res>{ResolutionSpecifier.genericPattern})?
             )?
         ''', re.VERBOSE)
     
@@ -850,8 +853,7 @@ class FunctionClass(Node):
         match = self.parse(string)
         self.access = AccessSpecifier(match.group('access')) if match.group('access') else None
         self.resolution = (
-            ResolutionSpecifier(match.group('resolution')) 
-            if match.group('resolution') and self.access 
+            ResolutionSpecifier(match.group('res')) if match.group('res') and self.access 
             else None
         )
     
@@ -866,11 +868,11 @@ class ParametersDeclarator(Node):
     @lazyattr
     def regex(cls):
         return re.compile(rf'''
-            \{Keys.L_PAREN}
+            {re.escape(Keys.L_PAREN)}
             (?P<paramsList>
                 (?:{TypeID.genericPattern})(?:\s*{Keys.SEPARATOR}\s*(?:{TypeID.genericPattern}))*
             )?
-            \{Keys.R_PAREN}
+            {re.escape(Keys.R_PAREN)}
         ''', re.VERBOSE)
     
     @staticmethod
@@ -956,10 +958,10 @@ class ConstructorDefinition(FuncNode):
             )\s+
             (?!(?P<retType>{TypeID.genericPattern})\s+)
             (?:(?P<callConv>{CallConvention.genericPattern})\s+)?
-            (?P<identifier>{ConstructorID.genericPattern}
-            )\s*
+            (?P<identifier>{ConstructorID.genericPattern})\s*
             (?P<params>{ParametersDeclarator.genericPattern})
             (?!\s*(?P<instanceQuals>{CVQualifierSeq.genericPattern}))?
+            (?:\s+{Keys.PTR64})?
         ''', re.VERBOSE)
 
     def __init__(self, string: str):
@@ -992,6 +994,7 @@ class DestructorDefinition(FuncNode):
             (?P<identifier>{DestructorID.genericPattern})\s*
             (?P<params>{ParametersDeclarator.genericPattern})
             (?!\s*(?P<instanceQuals>{CVQualifierSeq.genericPattern}))?
+            (?:\s+{Keys.PTR64})?
         ''', re.VERBOSE)
 
     def __init__(self, string: str):
@@ -1028,6 +1031,7 @@ class OperatorFunctionDefinition(FuncNode):
             (?P<identifier>{OperatorFunctionID.genericPattern})\s*
             (?P<params>{ParametersDeclarator.genericPattern})
             (?:\s*(?P<instanceQuals>{CVQualifierSeq.genericPattern}))?
+            (?:\s+{Keys.PTR64})?
         ''', re.VERBOSE)
 
     def __init__(self, string: str):
@@ -1064,6 +1068,7 @@ class MethodDefinition(FuncNode):
             (?P<identifier>{QualifiedID.genericPattern})\s*
             (?P<params>{ParametersDeclarator.genericPattern})
             (?:\s*(?P<instanceQuals>{CVQualifierSeq.genericPattern}))?
+            (?:\s+{Keys.PTR64})?
         ''', re.VERBOSE)
     
     def __init__(self, string: str):
@@ -1351,6 +1356,10 @@ class Mangler:
                 return 'M'
             case FundamentalTypeSpecifier.DOUBLE:
                 return 'N'
+            case FundamentalTypeSpecifier.INT64:
+                return '_J'
+            case FundamentalTypeSpecifier.UINT64:
+                return '_K'
             case FundamentalTypeSpecifier.BOOL:
                 return '_N'
 
@@ -1433,7 +1442,6 @@ class Mangler:
     
     def mangleConstExpression(self, const_expr: ConstantExpression):
         result = '$0'
-        
         value = int(const_expr.value)
         
         if value == 0:
@@ -1511,7 +1519,6 @@ class Mangler:
     
     def mangle(self, _def: Definition):
         result = '?'
-        
         match _def:
             case FunctionDefinition():
                 result += self.mangleFunctionDef(_def)
@@ -1528,24 +1535,19 @@ def adler32(data):
     return zlib.adler32(str(data).encode('utf-8'))
 
 def sha256(data):
-    return hashlib.sha256(str(data).encode('utf-8')).hexdigest()
+    return hashlib.sha256(str(data).encode('utf-8')).hexdigest().upper()
 
 
 parser = argparse.ArgumentParser(description="Accepts inline C++ definitions for mangling and hashing")
-parser.add_argument("definitions", nargs='+', default="", help='One or more inline C++ definition, e.g. "public: void MyClass::myMethod(void*) const"')
+parser.add_argument("definitions", nargs='+', default="", help='One or more quote encased inline C++ definition, e.g. "public: void MyClass::myMethod(void*) const"')
 
 def main():
     args = parser.parse_args()
     for raw_def in args.definitions:
-        definition = Definition(raw_def) if raw_def else None
-        if definition is None:
-            continue
-
-        mangled = Mangler(definition)
+        mangled = Mangler(Definition(raw_def))
         print('')
         print(mangled)
         print(adler32(mangled))
         print(sha256(mangled))
 
 main()
-
