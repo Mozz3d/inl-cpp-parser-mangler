@@ -1,4 +1,4 @@
-import __main__, argparse, re, zlib, hashlib
+import argparse, re, zlib, hashlib
 from types import SimpleNamespace
 
 
@@ -1562,4 +1562,5 @@ def main():
         print(adler32(mangled))
         print(sha256(mangled))
 
-main()
+if __name__ == "__main__":
+    main()
