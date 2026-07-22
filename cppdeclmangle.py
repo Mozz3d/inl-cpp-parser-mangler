@@ -205,6 +205,10 @@ class CallConvention(Node):
     def STDCALL(cls):
         return cls(Keys.STDCALL)
 
+    @lazyattr
+    def FASTCALL(cls):
+        return cls(Keys.FASTCALL)
+
     def build(self, match):
         self.specifier = match.group()
     
@@ -711,10 +715,14 @@ class TypeID(Node):
         )
         
         if self.cv_qualifiers is not None and self.isPtr():
+            pointee = self.declarator
+            while pointee.prev is not None:
+                pointee = pointee.prev
+
             if Keys.CONST in self.cv_qualifiers:
-                self.declarator.isPtrToConst = True
+                pointee.isPtrToConst = True
             if Keys.VOLATILE in self.cv_qualifiers:
-                self.declarator.isPtrToVolatile = True
+                pointee.isPtrToVolatile = True
     
     def __str__(self):
         return (
@@ -867,8 +875,9 @@ class PtrOperator(Node):
         return re.compile(rf'''
             (?P<ptrToMember>{NestedNameSpecifier.genericPattern})?
             (?P<operator>{Keys.RVAL_REF}|{Keys.REF}|{re.escape(Keys.PTR)})\s*
-            (?:(?P<cvQuals>{CVQualifiers.genericPattern})\s*)?
+            (?:(?P<lhCVQuals>{CVQualifiers.genericPattern})\s*)?
             (?P<ptrExtQuals>{PtrExtQualifiers.genericPattern})?
+            (?:\s*(?P<rhCVQuals>{CVQualifiers.genericPattern}))?
         ''', re.VERBOSE)
 
     @lazyattr
@@ -904,7 +913,7 @@ class PtrOperator(Node):
         self.operator = match.group('operator')
         self.cv_qualifiers = (
             CVQualifiers(cvQuals) 
-            if (cvQuals := match.group('cvQuals')) and self.operator == Keys.PTR
+            if (cvQuals := match.group('rhCVQuals') or match.group('lhCVQuals')) and self.operator == Keys.PTR
             else None
         )
         self.ext_qualifiers = PtrExtQualifiers(match.group('ptrExtQuals') or Keys.PTR64) 
@@ -1286,7 +1295,7 @@ class MethodDeclaration(FuncNode):
         )
         self.instance_ext_quals = PtrExtQualifiers(match.group('instExtQuals') or Keys.PTR64)
         
-        if self.isStatic() and self.instance_quals is not None:
+        if self.isStatic() and self.instance_cv_quals is not None:
             return self.BUILD_ERROR # static method cannot have instance qualifiers
 
 
@@ -1407,7 +1416,7 @@ class PropertyDeclaration(VarNode):
         self.identifier = QualifiedID(match.group('identifier'))
         self.storage_quals = (
             self.decl_type.declarator.operator.cv_qualifiers 
-            if self.decl_type.declarator and self.decl_type.declarator.isPtr()
+            if self.decl_type.declarator and self.decl_type.isPtr()
             else self.decl_type.cv_qualifiers
         )
 
@@ -1430,7 +1439,7 @@ class VariableDeclaration(VarNode):
         self.decl_type = TypeID(match.group('declType'))
         self.storage_quals = (
             self.decl_type.declarator.operator.cv_qualifiers 
-            if self.decl_type.declarator and self.decl_type.declarator.isPtr()
+            if self.decl_type.declarator and self.decl_type.isPtr()
             else self.decl_type.cv_qualifiers
         )
         self.identifier = IDExpression(match.group('identifier')) 
@@ -1629,6 +1638,8 @@ class Mangler:
                 return 'V'
             case ClassKey.STRUCT:
                 return 'U'
+            case ClassKey.UNION:
+                return 'T'
 
     def mangleElaboratedType(self, elaborated_type: ElaboratedTypeSpecifier):
         result = self.mangleClassKey(elaborated_type.class_key)
@@ -1778,10 +1789,12 @@ class Mangler:
         for param in params:
             if param in param_back_refs:
                 result += str(param_back_refs.index(param))
-            else:
-                if len(param_back_refs) < 10:
-                    param_back_refs.append(param)
-                result += self.mangleTypeID(param)
+                continue
+
+            mangled_param = self.mangleTypeID(param)
+            if len(mangled_param) > 1 and len(param_back_refs) < 10:
+                param_back_refs.append(param)
+            result += mangled_param
         
         if params != ParametersDeclarator.VOID:
             result += '@'
@@ -1819,7 +1832,6 @@ class Mangler:
 
         if var_def.decl_type:
             result += self.mangleTypeID(var_def.decl_type)
-            result += 'E'
         
         result += self.mangleCVQualifiers(var_def.storage_quals)
 
